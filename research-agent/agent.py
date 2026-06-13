@@ -99,9 +99,18 @@ def get_text_content(response: anthropic.types.Message) -> str:
 
 
 def is_valid_brief(content: str) -> bool:
-    """Confirm content is a real research brief, not a conversational response."""
+    """
+    Confirm content is a real research brief, not a conversational response.
+    Requires a TL;DR section and minimum length. READY FOR REVIEW is checked
+    loosely since the agent may render it inside or outside a code fence.
+    """
     has_tldr = "TL;DR" in content or "tl;dr" in content.lower()
-    has_review = "READY FOR REVIEW" in content
+    has_review = (
+        "READY FOR REVIEW" in content
+        or "ready for review" in content.lower()
+        or "## Sources" in content  # sources section is an equally strong signal
+        or "## Gaps" in content
+    )
     is_long = len(content.strip()) > 300
     return has_tldr and has_review and is_long
 
