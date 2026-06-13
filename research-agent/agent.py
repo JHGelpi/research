@@ -231,11 +231,26 @@ class ResearchSession:
     def handle_review_reply(self, user_reply: str) -> str:
         """
         Handle the user's reply to the READY FOR REVIEW block.
-        If approved: commit to GitHub and return confirmation.
+        If approved: validate brief, then commit to GitHub.
+        If 'redo': re-run research from scratch without re-confirming scope.
         Otherwise: pass reply back to agent for revision.
         """
         if is_approval(user_reply) and self.pending_brief and self.pending_topic:
             return self._commit()
+
+        # 'redo' — re-run research without re-confirming scope
+        if user_reply.strip().lower() == "redo":
+            self.state = "researching"
+            print("\n[Agent — re-running research...]\n")
+            self._append_user(
+                "Please disregard your last response and run the full research now. "
+                "Output the complete structured brief starting with ## TL;DR."
+            )
+            response = self._run_until_text()
+            revised = get_text_content(response)
+            self.pending_brief = revised
+            self.state = "review_pending"
+            return revised
 
         # Not an approval — treat as a revision request
         self.state = "researching"
@@ -250,8 +265,29 @@ class ResearchSession:
     # Step 4: Commit to GitHub
     # ------------------------------------------------------------------
 
+    def _is_valid_brief(self, content: str) -> bool:
+        """
+        Sanity-check that pending_brief is actual research output and not
+        a conversational meta-response the agent sent instead of a brief.
+        A valid brief must contain a TL;DR section and a READY FOR REVIEW block.
+        """
+        has_tldr = "TL;DR" in content or "tl;dr" in content.lower()
+        has_review = "READY FOR REVIEW" in content
+        is_long_enough = len(content.strip()) > 300
+        return has_tldr and has_review and is_long_enough
+
     def _commit(self) -> str:
         assert self.pending_brief and self.pending_topic
+
+        if not self._is_valid_brief(self.pending_brief):
+            self.state = "review_pending"
+            return (
+                "[Error] The content queued for commit doesn't look like a completed "
+                "research brief — it's missing a TL;DR or READY FOR REVIEW block.\n"
+                "This usually means the agent responded conversationally instead of "
+                "researching.\n\n"
+                "Reply 'redo' to run the research again, or describe what you want changed."
+            )
 
         try:
             result = commit_brief(
