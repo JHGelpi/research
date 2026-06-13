@@ -8,30 +8,82 @@ committing output to GitHub.
 
 ```
 research-agent/
-├── agent.py          # Main CLI loop and session state machine
-├── github_writer.py  # GitHub commit logic (PyGithub)
-├── CLAUDE.md         # Guardrails and behavior contract (loaded as system prompt)
-├── config.yaml       # All runtime settings
+├── agent.py            # Main CLI loop and session state machine
+├── github_writer.py    # GitHub commit logic (PyGithub)
+├── CLAUDE.md           # Guardrails and behavior contract (loaded as system prompt)
+├── config.yaml         # All runtime settings
+├── Dockerfile          # Two-stage build, non-root runtime user
+├── docker-compose.yml  # Container config with named volume
+├── run.sh              # Lifecycle manager — primary entrypoint
+├── .env.example        # Fallback secrets template (copy to .env if not using Bitwarden)
 └── requirements.txt
 ```
 
-## Setup (WSL2)
+## Prerequisites
+
+- **Docker Desktop** with WSL2 backend enabled
+- **Bitwarden CLI** (`bw`) — preferred secrets manager
+- A Bitwarden **Login item** named `research-agent` with two Hidden custom fields:
+  - `ANTHROPIC_API_KEY`
+  - `GITHUB_TOKEN`
+
+See _Secrets management_ below for setup details.
+
+## Secrets management
+
+Secrets are fetched from Bitwarden at runtime and injected as environment
+variables. They are never written to disk inside the container.
+
+### Bitwarden setup (recommended)
+
+**Option A — guided CLI setup:**
+```bash
+export BW_SESSION=$(bw unlock --raw)
+./run.sh bw-setup
+```
+
+`bw-setup` prompts for your keys, creates the Bitwarden item in the correct
+format, and offers to delete any existing `.env` file.
+
+**Option B — manual Bitwarden setup:**
+
+In the Bitwarden web vault or desktop app:
+1. Create a new item → type **Login**, name it `research-agent`
+2. Leave username/password blank
+3. Add two **Hidden** custom fields:
+   - `ANTHROPIC_API_KEY` → your Anthropic API key
+   - `GITHUB_TOKEN` → your GitHub fine-grained token
+4. Save, then `bw sync` in your terminal
+
+### Fallback: .env file
+
+If Bitwarden is unavailable, `run.sh` automatically falls back to a `.env`
+file with a warning. To use this path:
 
 ```bash
-# 1. Clone / copy this folder into your WSL2 home
-cd ~
-# (copy or git clone the research-agent folder here)
+cp .env.example .env
+# edit .env with real values
+```
 
-# 2. Create a virtualenv
-python3 -m venv .venv
-source .venv/bin/activate
+`.env` is gitignored and should never be committed.
 
-# 3. Install deps
-pip install -r requirements.txt
+### Running with Bitwarden (normal workflow)
 
-# 4. Set environment variables — add to ~/.bashrc or a .env file
-export ANTHROPIC_API_KEY="sk-ant-..."
-export GITHUB_TOKEN="ghp_..."        # needs: repo → contents (read + write)
+```bash
+export BW_SESSION=$(bw unlock --raw)
+./run.sh
+```
+
+Add a convenience alias to `~/.bashrc` to reduce typing:
+
+```bash
+alias bw-unlock='export BW_SESSION=$(bw unlock --raw)'
+```
+
+Then the daily workflow is just:
+
+```bash
+bw-unlock && ./run.sh
 ```
 
 ## GitHub token scope
@@ -47,7 +99,7 @@ That's the minimum. Do not grant broader scopes.
 ## Usage
 
 ```bash
-python agent.py
+./run.sh
 ```
 
 **Session flow:**
@@ -83,6 +135,18 @@ Brief committed to GitHub.
   Commit:  a3f9c12
   URL:     https://github.com/JHGelpi/research/blob/main/...
 ```
+
+## run.sh commands
+
+| Command | What it does |
+|---|---|
+| `./run.sh` | Start the agent (build if needed) |
+| `./run.sh build` | Force-rebuild the image |
+| `./run.sh shell` | Open bash inside the container (debug) |
+| `./run.sh stop` | Stop the container |
+| `./run.sh clean` | Remove container, image, and volume |
+| `./run.sh logs` | Tail logs from the last run |
+| `./run.sh bw-setup` | Guided Bitwarden secrets setup |
 
 ## Customizing guardrails
 
