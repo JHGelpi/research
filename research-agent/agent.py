@@ -74,7 +74,11 @@ class AgentError(Exception):
 # ---------------------------------------------------------------------------
 
 APPROVAL_PATTERNS = re.compile(
-    r"\b(approved?|commit\s+it|lgtm|looks?\s+good|ship\s+it|yes\s+commit|go\s+ahead)\b",
+    r"\b("
+    r"approved?|commit\s+it|commit\s+as.is|lgtm|looks?\s+good|"
+    r"ship\s+it|yes\s+commit|go\s+ahead|proceed|yes\s+please|"
+    r"stick\s+with|as.is|that.s\s+fine|that\s+works|let.s\s+go"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -252,12 +256,18 @@ class ResearchSession:
             self.state = "review_pending"
             return revised
 
-        # Not an approval — treat as a revision request
+        # Not an approval — treat as a revision request.
+        # Only overwrite pending_brief if the agent's response looks like
+        # a real revised brief (contains TL;DR). If the agent responds
+        # conversationally, keep the existing brief intact so the user
+        # can still approve and commit it.
         self.state = "researching"
         self._append_user(user_reply)
         response = self._run_until_text()
         revised = get_text_content(response)
-        self.pending_brief = revised
+        if self._is_valid_brief(revised):
+            self.pending_brief = revised
+        # else: keep pending_brief as-is; the agent responded conversationally
         self.state = "review_pending"
         return revised
 

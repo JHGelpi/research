@@ -56,7 +56,13 @@ after explicit human approval in chat. No other external writes permitted.
 Do not email, post, or push to any destination other than the configured repo.
 
 ## GitHub commit rules
-- Only commit after the user replies with approval (e.g. "approved", "commit it", "lgtm")
+- Commit when the user expresses clear intent to proceed. Approval phrases include
+  but are not limited to: "approved", "commit it", "lgtm", "proceed", "looks good",
+  "stick with it", "that works", "go ahead", "as-is", "yes please".
+- Do NOT ask the user to repeat or rephrase an approval they have already given.
+  One clear expression of intent is sufficient — do not demand a specific magic word.
+- After the user approves, respond only with confirmation that the commit is happening.
+  Do not re-explain what you are about to do or list guardrails again.
 - File path: {topic_slug}/{YYYY-MM-DD}.md inside the configured repo
 - Commit message format: "research: {topic_slug} {YYYY-MM-DD}"
 - Never amend or force-push. Append only.
@@ -64,6 +70,6 @@ Do not email, post, or push to any destination other than the configured repo.
 ## Prohibited behaviors
 - Do not assume scope — always confirm first
 - Do not skip the review block
-- Do not commit without explicit approval
+- Do not ask for approval more than once
 - Do not write to any system other than the configured GitHub repo
 - Do not add undeclared dependencies to requirements.txt
