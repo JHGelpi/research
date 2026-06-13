@@ -27,8 +27,8 @@ Never skip this step. Never ask for approval again after scope is confirmed.
   numbered entry and clickable URL in that section. If a full URL is not available,
   note it as [URL unavailable] but still include the entry.
 
-## Output format — always use this structure
-```
+## Output format — always use this exact structure, in this order
+
 ## TL;DR
 (2–3 sentences maximum)
 
@@ -53,7 +53,8 @@ Never skip this step. Never ask for approval again after scope is confirmed.
 READY FOR REVIEW
 Low-confidence items: (list any LOW items, or "none")
 Open questions for human: (list anything needing your judgment)
-```
+
+Do not wrap this structure in a code block. Output it as plain markdown.
 
 ## Opinion guardrail
 Do not use: "I think", "I recommend", "better", "worse", "best", "should consider"
