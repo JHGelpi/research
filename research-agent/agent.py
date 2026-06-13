@@ -27,7 +27,6 @@ from pathlib import Path
 
 import anthropic
 import yaml
-
 from github_writer import commit_brief
 
 # ---------------------------------------------------------------------------
@@ -60,6 +59,17 @@ TOOLS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Recoverable agent error — printed cleanly, no traceback
+# ---------------------------------------------------------------------------
+
+
+class AgentError(Exception):
+    """A known, user-facing error. Printed without a traceback."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Approval detection
 # ---------------------------------------------------------------------------
 
@@ -68,6 +78,7 @@ APPROVAL_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+
 def is_approval(text: str) -> bool:
     return bool(APPROVAL_PATTERNS.search(text))
 
@@ -75,6 +86,7 @@ def is_approval(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Brief extraction helpers
 # ---------------------------------------------------------------------------
+
 
 def extract_topic_from_scope(scope_reply: str) -> str:
     """
@@ -92,14 +104,13 @@ def extract_topic_from_scope(scope_reply: str) -> str:
 
 def get_text_content(response: anthropic.types.Message) -> str:
     """Extract plain text from an API response (skips tool-use blocks)."""
-    return "\n".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    return "\n".join(block.text for block in response.content if block.type == "text")
 
 
 # ---------------------------------------------------------------------------
 # Core agent loop
 # ---------------------------------------------------------------------------
+
 
 class ResearchSession:
     """
@@ -110,16 +121,46 @@ class ResearchSession:
         self.messages: list[dict] = []
         self.pending_brief: str | None = None
         self.pending_topic: str | None = None
-        self.state: str = "idle"  # idle → scope_pending → researching → review_pending → committed
+        self.state: str = (
+            "idle"  # idle → scope_pending → researching → review_pending → committed
+        )
 
     def _call_api(self) -> anthropic.types.Message:
-        return client.messages.create(
-            model=AGENT_CFG["model"],
-            max_tokens=AGENT_CFG["max_tokens"],
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=self.messages,
-        )
+        try:
+            return client.messages.create(
+                model=AGENT_CFG["model"],
+                max_tokens=AGENT_CFG["max_tokens"],
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=self.messages,
+            )
+        except anthropic.AuthenticationError:
+            raise AgentError(
+                "Invalid API key. Check ANTHROPIC_API_KEY in Bitwarden or your .env fallback."
+            )
+        except anthropic.PermissionDeniedError:
+            raise AgentError(
+                "API key lacks permission for this model or feature.\n"
+                "  Check your account at console.anthropic.com."
+            )
+        except anthropic.BadRequestError as exc:
+            if "credit balance" in str(exc).lower():
+                raise AgentError(
+                    "Your Anthropic credit balance is too low.\n"
+                    "  Add credits at: console.anthropic.com → Plans & Billing"
+                )
+            raise AgentError(f"Bad request sent to API: {exc}")
+        except anthropic.RateLimitError:
+            raise AgentError(
+                "Rate limit reached. Wait a moment and try again.\n"
+                "  If this recurs, check your usage tier at console.anthropic.com."
+            )
+        except anthropic.APIConnectionError:
+            raise AgentError(
+                "Could not reach the Anthropic API. Check your internet connection."
+            )
+        except anthropic.APIStatusError as exc:
+            raise AgentError(f"Anthropic API error {exc.status_code}: {exc.message}")
 
     def _append_user(self, text: str):
         self.messages.append({"role": "user", "content": text})
@@ -152,7 +193,10 @@ class ResearchSession:
                 continue
 
             # Unexpected stop reason — surface and return
-            print(f"[warn] Unexpected stop_reason: {response.stop_reason}", file=sys.stderr)
+            print(
+                f"[warn] Unexpected stop_reason: {response.stop_reason}",
+                file=sys.stderr,
+            )
             return response
 
     # ------------------------------------------------------------------
@@ -231,7 +275,11 @@ class ResearchSession:
             )
         except Exception as exc:
             self.state = "review_pending"
-            return f"[ERROR] GitHub commit failed: {exc}\nThe brief has NOT been committed. Please check your GITHUB_TOKEN and repo config."
+            return (
+                f"[ERROR] GitHub commit failed: {exc}\n"
+                "The brief has NOT been committed. Check your GITHUB_TOKEN and repo config.\n"
+                "Your brief is still available — reply 'lgtm' to try again."
+            )
 
         self.state = "committed"
         return (
@@ -247,47 +295,58 @@ class ResearchSession:
 # CLI entrypoint
 # ---------------------------------------------------------------------------
 
+
 def main():
     print("Research Agent — type your topic, or 'quit' to exit.\n")
 
     session = ResearchSession()
 
     while True:
-        if session.state == "idle":
-            query = input("Topic > ").strip()
-            if query.lower() in ("quit", "exit", "q"):
-                break
-            if not query:
-                continue
-            print("\n[Agent — confirming scope...]\n")
-            scope = session.start(query)
-            print(scope)
-            print()
+        try:
+            if session.state == "idle":
+                query = input("Topic > ").strip()
+                if query.lower() in ("quit", "exit", "q"):
+                    break
+                if not query:
+                    continue
+                print("\n[Agent — confirming scope...]\n")
+                scope = session.start(query)
+                print(scope)
+                print()
 
-        elif session.state == "scope_pending":
-            reply = input("You > ").strip()
-            if not reply:
-                continue
-            print("\n[Agent — researching...]\n")
-            brief = session.confirm_scope(reply)
-            print(brief)
-            print()
+            elif session.state == "scope_pending":
+                reply = input("You > ").strip()
+                if not reply:
+                    continue
+                print("\n[Agent — researching...]\n")
+                brief = session.confirm_scope(reply)
+                print(brief)
+                print()
 
-        elif session.state == "review_pending":
-            reply = input("You > ").strip()
-            if not reply:
-                continue
-            print("\n[Agent...]\n")
-            result = session.handle_review_reply(reply)
-            print(result)
-            print()
+            elif session.state == "review_pending":
+                reply = input("You > ").strip()
+                if not reply:
+                    continue
+                print("\n[Agent...]\n")
+                result = session.handle_review_reply(reply)
+                print(result)
+                print()
 
-        elif session.state == "committed":
-            # Reset for next query
+            elif session.state == "committed":
+                # Reset for next query
+                session = ResearchSession()
+
+            else:
+                print(f"[unexpected state: {session.state}]", file=sys.stderr)
+                session = ResearchSession()
+
+        except AgentError as exc:
+            # Known, recoverable errors — print cleanly and reset to idle
+            print(f"\n[Error] {exc}\n", file=sys.stderr)
             session = ResearchSession()
 
-        else:
-            print(f"[unexpected state: {session.state}]", file=sys.stderr)
+        except KeyboardInterrupt:
+            print("\n\nInterrupted. Type 'quit' to exit or start a new topic.\n")
             session = ResearchSession()
 
 
