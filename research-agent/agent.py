@@ -11,11 +11,19 @@ Requires:
 
 Session states:
     idle               → waiting for a topic
-    scope_pending      → agent has confirmed scope, waiting for user to confirm/correct
-    researching        → agent is running research (internal, not shown to user)
+    scope_pending      → agent confirmed scope, waiting for user to confirm/correct
     review_pending     → brief is displayed; user can ask questions or request changes
-    awaiting_commit    → user has said "commit" / "looks good"; one more confirm fires the push
-    committed          → brief committed to GitHub; session resets
+    awaiting_commit    → user typed 'done'; one explicit commit command fires the push
+    committed          → brief committed; session resets
+
+CLI commands (only active in review_pending):
+    done / save        → advance to awaiting_commit (shows what will be pushed)
+    redo               → re-run research without re-confirming scope
+    quit / exit / q    → exit the agent
+
+In awaiting_commit:
+    commit / lgtm / approved / yes   → fire the commit
+    anything else                    → return to review_pending
 """
 
 from __future__ import annotations
@@ -59,44 +67,26 @@ TOOLS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Recoverable agent error — printed cleanly, no traceback
+# Recoverable agent error
 # ---------------------------------------------------------------------------
 
 
 class AgentError(Exception):
-    """A known, user-facing error. Printed without a traceback."""
-
     pass
 
 
 # ---------------------------------------------------------------------------
-# Intent detection
+# Intent detection — explicit CLI commands only, no natural language matching
 # ---------------------------------------------------------------------------
 
-# Explicit commit intent — unambiguous phrases only.
-# "proceed", "looks good", "stick with it" are NOT here — they're too
-# easily said during the review conversation before the user is ready to commit.
-COMMIT_PATTERNS = re.compile(
-    r"\b(approved?|commit(\s+it|\s+as.is)?|lgtm|ship\s+it|yes\s+commit|push\s+it)\b",
-    re.IGNORECASE,
-)
+# User is done reviewing and wants to commit
+DONE_COMMANDS = {"done", "save"}
 
-# Softer "ready to move forward" phrases — used to advance from review_pending
-# to awaiting_commit (where the user is shown what will be committed and asked
-# to confirm with an explicit commit phrase).
-READY_PATTERNS = re.compile(
-    r"\b(proceed|looks?\s+good|stick\s+with|as.is|that\s+works|go\s+ahead|"
-    r"yes\s+please|that.s\s+fine|let.s\s+go|good\s+to\s+go|ready)\b",
-    re.IGNORECASE,
-)
+# Final commit confirmation (in awaiting_commit state only)
+COMMIT_COMMANDS = {"commit", "lgtm", "approved", "yes"}
 
-
-def is_commit(text: str) -> bool:
-    return bool(COMMIT_PATTERNS.search(text))
-
-
-def is_ready(text: str) -> bool:
-    return bool(READY_PATTERNS.search(text)) or is_commit(text)
+# Exit
+EXIT_COMMANDS = {"quit", "exit", "q"}
 
 
 # ---------------------------------------------------------------------------
@@ -105,15 +95,11 @@ def is_ready(text: str) -> bool:
 
 
 def get_text_content(response: anthropic.types.Message) -> str:
-    """Extract plain text from an API response (skips tool-use blocks)."""
     return "\n".join(block.text for block in response.content if block.type == "text")
 
 
 def is_valid_brief(content: str) -> bool:
-    """
-    Confirm content is a real research brief, not a conversational meta-response.
-    Requires TL;DR, READY FOR REVIEW, and minimum length.
-    """
+    """Confirm content is a real research brief, not a conversational response."""
     has_tldr = "TL;DR" in content or "tl;dr" in content.lower()
     has_review = "READY FOR REVIEW" in content
     is_long = len(content.strip()) > 300
@@ -126,17 +112,6 @@ def is_valid_brief(content: str) -> bool:
 
 
 class ResearchSession:
-    """
-    Manages one research topic from scope confirmation through GitHub commit.
-
-    State machine:
-        idle → scope_pending → review_pending ⇄ (revision loop)
-                                     ↓  (user signals ready)
-                              awaiting_commit
-                                     ↓  (explicit commit phrase)
-                                 committed
-    """
-
     def __init__(self):
         self.messages: list[dict] = []
         self.pending_brief: str | None = None
@@ -144,7 +119,7 @@ class ResearchSession:
         self.state = "idle"
 
     # ------------------------------------------------------------------
-    # API call with graceful error handling
+    # API call
     # ------------------------------------------------------------------
 
     def _call_api(self) -> anthropic.types.Message:
@@ -191,7 +166,6 @@ class ResearchSession:
         self.messages.append({"role": "assistant", "content": response.content})
 
     def _run_until_text(self) -> anthropic.types.Message:
-        """Run the agentic loop until the model returns end_turn (no more tool calls)."""
         while True:
             response = self._call_api()
             self._append_assistant(response)
@@ -211,7 +185,6 @@ class ResearchSession:
 
     def start(self, user_query: str) -> str:
         self.state = "scope_pending"
-        # Store original query as topic slug source — never the agent's restatement
         self.pending_topic = user_query
         self._append_user(
             f"Research request: {user_query}\n\n"
@@ -222,41 +195,32 @@ class ResearchSession:
         return get_text_content(response)
 
     # ------------------------------------------------------------------
-    # Step 2: User confirms scope → research runs → brief returned
+    # Step 2: Scope confirmed → research
     # ------------------------------------------------------------------
 
     def confirm_scope(self, user_reply: str) -> str:
         self._append_user(user_reply + "\n\nProceed with research.")
         response = self._run_until_text()
         brief = get_text_content(response)
-        # Only store as pending_brief if it's a real brief
         if is_valid_brief(brief):
             self.pending_brief = brief
         self.state = "review_pending"
         return brief
 
     # ------------------------------------------------------------------
-    # Step 3a: Review conversation — user can ask questions or request changes
+    # Step 3a: Review — free-form conversation, explicit commands only
     # ------------------------------------------------------------------
 
-    def handle_review_reply(self, user_reply: str) -> tuple[str, str]:
-        """
-        Handle a reply during review_pending.
+    def handle_review_reply(self, user_reply: str) -> str:
+        cmd = user_reply.strip().lower()
 
-        Returns (response_text, new_state) so the main loop can print a
-        contextual prompt based on what state we're now in.
-        """
-        # Explicit commit phrase — go straight to commit
-        if is_commit(user_reply) and self.pending_brief and self.pending_topic:
-            result = self._commit()
-            return result, self.state
-
-        # Softer "ready" signal — advance to awaiting_commit for one final confirm
-        if (
-            is_ready(user_reply)
-            and self.pending_brief
-            and is_valid_brief(self.pending_brief)
-        ):
+        # 'done' or 'save' → advance to awaiting_commit
+        if cmd in DONE_COMMANDS:
+            if not self.pending_brief or not is_valid_brief(self.pending_brief):
+                return (
+                    "[Error] No valid brief is ready to commit. "
+                    "Type 'redo' to re-run research."
+                )
             self.state = "awaiting_commit"
             slug = self.pending_topic[:60] + (
                 "..." if len(self.pending_topic) > 60 else ""
@@ -266,52 +230,50 @@ class ResearchSession:
                 f"  Topic:  {slug}\n"
                 f"  Repo:   {GITHUB_CFG['repo']}\n"
                 f"  Branch: {GITHUB_CFG['branch']}\n\n"
-                "Type 'commit', 'approved', or 'lgtm' to confirm. "
-                "Anything else returns to the brief."
-            ), "awaiting_commit"
+                "Type 'commit', 'lgtm', 'approved', or 'yes' to confirm.\n"
+                "Anything else returns you to the brief."
+            )
 
-        # 'redo' — re-run research without re-confirming scope
-        if user_reply.strip().lower() == "redo":
+        # 'redo' → re-run research
+        if cmd == "redo":
             print("\n[Agent — re-running research...]\n")
             self._append_user(
                 "Please disregard your last response and produce the full research brief now, "
-                "starting with ## TL;DR."
+                "starting with ## TL;DR. Include a ## Sources section at the end with "
+                "numbered full URLs for every source cited."
             )
             response = self._run_until_text()
             revised = get_text_content(response)
             if is_valid_brief(revised):
                 self.pending_brief = revised
             self.state = "review_pending"
-            return revised, "review_pending"
+            return revised
 
-        # Revision request — pass to agent, preserve pending_brief if response is conversational
+        # Everything else → pass to agent as a question or revision request
         self._append_user(user_reply)
         response = self._run_until_text()
         revised = get_text_content(response)
         if is_valid_brief(revised):
             self.pending_brief = revised
         self.state = "review_pending"
-        return revised, "review_pending"
+        return revised
 
     # ------------------------------------------------------------------
-    # Step 3b: Awaiting commit confirmation
+    # Step 3b: Awaiting final commit confirmation
     # ------------------------------------------------------------------
 
-    def handle_commit_reply(self, user_reply: str) -> tuple[str, str]:
-        """
-        We've shown the user what will be committed. Explicit commit phrase fires it.
-        Anything else drops back to review_pending.
-        """
-        if is_commit(user_reply):
-            result = self._commit()
-            return result, self.state
+    def handle_commit_reply(self, user_reply: str) -> str:
+        cmd = user_reply.strip().lower()
 
-        # Not a commit phrase — back to review
+        if cmd in COMMIT_COMMANDS:
+            return self._commit()
+
+        # Not a commit command — back to review
         self.state = "review_pending"
         return (
-            "Commit cancelled — brief is still available for review.\n"
-            "Make changes, ask questions, or say 'commit' / 'lgtm' when ready."
-        ), "review_pending"
+            "Commit cancelled — returning to review.\n"
+            "Ask questions, request changes, or type 'done' when ready to commit."
+        )
 
     # ------------------------------------------------------------------
     # Step 4: Commit to GitHub
@@ -323,7 +285,7 @@ class ResearchSession:
         if not is_valid_brief(self.pending_brief):
             self.state = "review_pending"
             return (
-                "[Error] Brief content failed validation — missing TL;DR or READY FOR REVIEW.\n"
+                "[Error] Brief failed validation — missing TL;DR or READY FOR REVIEW.\n"
                 "Type 'redo' to re-run research, or describe what you want changed."
             )
 
@@ -339,8 +301,8 @@ class ResearchSession:
             self.state = "review_pending"
             return (
                 f"[ERROR] GitHub commit failed: {exc}\n"
-                "The brief has NOT been committed. Check your GITHUB_TOKEN and repo config.\n"
-                "Your brief is still here — type 'lgtm' to try again."
+                "Brief not committed. Check your GITHUB_TOKEN and repo config.\n"
+                "Type 'done' to try again."
             )
 
         self.state = "committed"
@@ -354,16 +316,27 @@ class ResearchSession:
 
 
 # ---------------------------------------------------------------------------
-# CLI entrypoint
+# CLI prompts
 # ---------------------------------------------------------------------------
 
+SCOPE_PROMPT = "You > "
+
 REVIEW_PROMPT = (
-    "  (Ask questions, request changes, say 'ready' to commit, or 'redo' to re-run)\n"
+    "\n  Commands: 'done' to commit  |  'redo' to re-run  |  "
+    "or just ask a question / request a change\n"
     "You > "
 )
+
 COMMIT_PROMPT = (
-    "  (Type 'commit', 'approved', or 'lgtm' to push — anything else cancels)\nYou > "
+    "\n  Type 'commit', 'lgtm', 'approved', or 'yes' to push  |  "
+    "anything else cancels\n"
+    "You > "
 )
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
 
 
 def main():
@@ -374,7 +347,7 @@ def main():
         try:
             if session.state == "idle":
                 query = input("Topic > ").strip()
-                if query.lower() in ("quit", "exit", "q"):
+                if query.lower() in EXIT_COMMANDS:
                     break
                 if not query:
                     continue
@@ -384,7 +357,7 @@ def main():
                 print()
 
             elif session.state == "scope_pending":
-                reply = input("You > ").strip()
+                reply = input(SCOPE_PROMPT).strip()
                 if not reply:
                     continue
                 print("\n[Agent — researching...]\n")
@@ -396,8 +369,10 @@ def main():
                 reply = input(REVIEW_PROMPT).strip()
                 if not reply:
                     continue
+                if reply.lower() in EXIT_COMMANDS:
+                    break
                 print("\n[Agent...]\n")
-                text, _ = session.handle_review_reply(reply)
+                text = session.handle_review_reply(reply)
                 print(text)
                 print()
 
@@ -406,7 +381,7 @@ def main():
                 if not reply:
                     continue
                 print("\n[Agent...]\n")
-                text, _ = session.handle_commit_reply(reply)
+                text = session.handle_commit_reply(reply)
                 print(text)
                 print()
 
