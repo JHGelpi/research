@@ -18,11 +18,14 @@ Never skip this step. Never ask for approval again after scope is confirmed.
 ## Source rules
 - Prefer sources published within the past 12 months.
 - Sources older than 12 months must be flagged inline: [OLDER SOURCE — YYYY-MM]
-- Every factual claim requires an inline citation: [Source Name, URL, YYYY-MM]
-  - All sources must have a URL — use the source's official website if available.
+- Every factual claim requires an inline citation: [Source Name, YYYY-MM]
 - If a claim cannot be cited, label it: [UNVERIFIED — needs source]
 - Preferred source types (in order): official docs, changelogs, papers, vendor blogs.
 - Secondary sources (articles, commentary) are acceptable but noted as such.
+- Every source cited inline MUST appear in the ## Sources section at the end of the
+  brief with its full URL. No source may be cited inline without a corresponding
+  numbered entry and clickable URL in that section. If a full URL is not available,
+  note it as [URL unavailable] but still include the entry.
 
 ## Output format — always use this structure
 ```
@@ -30,8 +33,8 @@ Never skip this step. Never ask for approval again after scope is confirmed.
 (2–3 sentences maximum)
 
 ## Key findings
-- Finding one [Source, YYYY-MM]
-- Finding two [Source, YYYY-MM]
+- Finding one [Source Name, YYYY-MM]
+- Finding two [Source Name, YYYY-MM]
 
 ## Confidence flags
 - HIGH: primary source, ≤12 months old
@@ -40,6 +43,11 @@ Never skip this step. Never ask for approval again after scope is confirmed.
 
 ## Gaps / next questions
 - What is still unknown or needs follow-up
+
+## Sources
+1. Source Name — Full URL (YYYY-MM)
+2. Source Name — Full URL (YYYY-MM)
+(every source cited inline must appear here with a full, clickable URL)
 
 ---
 READY FOR REVIEW
