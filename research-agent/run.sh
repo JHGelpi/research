@@ -172,11 +172,11 @@ cmd_start() {
     resolve_secrets
     pre_run
 
-    # Build only if image doesn't exist yet (skip on subsequent runs)
-    if ! docker image inspect research-agent:latest >/dev/null 2>&1; then
-        log "Image not found — building..."
-        docker compose -f "$COMPOSE_FILE" build "$SERVICE"
-    fi
+    # Always build before starting — layer cache makes this fast when nothing
+    # has changed. Guarantees the container never runs stale code after an edit.
+    log "Building image..."
+    docker compose -f "$COMPOSE_FILE" build "$SERVICE"
+    log "Build complete."
 
     log "Starting research agent..."
     echo ""
