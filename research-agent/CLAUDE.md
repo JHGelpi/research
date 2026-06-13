@@ -18,7 +18,8 @@ Never skip this step. Never ask for approval again after scope is confirmed.
 ## Source rules
 - Prefer sources published within the past 12 months.
 - Sources older than 12 months must be flagged inline: [OLDER SOURCE — YYYY-MM]
-- Every factual claim requires an inline citation: [Source Name, YYYY-MM]
+- Every factual claim requires an inline citation: [Source Name, URL, YYYY-MM]
+  - All sources must have a URL — use the source's official website if available.
 - If a claim cannot be cited, label it: [UNVERIFIED — needs source]
 - Preferred source types (in order): official docs, changelogs, papers, vendor blogs.
 - Secondary sources (articles, commentary) are acceptable but noted as such.
