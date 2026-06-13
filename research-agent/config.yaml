@@ -1,0 +1,28 @@
+# Research Agent Configuration
+
+agent:
+  model: claude-sonnet-4-6
+  max_tokens: 4096
+  # System prompt is loaded from CLAUDE.md at runtime
+
+github:
+  repo: JHGelpi/research # owner/repo — no trailing slash
+  branch: main
+  base_path: "research-briefs/" # root of repo; set e.g. "briefs" to nest under a folder
+  file_structure: topic_folders # topic/{YYYY-MM-DD}.md
+  commit_trigger: auto_after_approval
+
+sources:
+  max_age_months: 12 # sources older than this get [OLDER SOURCE] flag
+  allowed:
+    - web_search
+    - google_drive
+    - uploaded_docs
+
+output:
+  confidence_levels:
+    - HIGH # primary source, ≤12 months
+    - MEDIUM # secondary source OR primary but >12 months
+    - LOW # inferred / no direct citation
+  require_tldr: true
+  require_review_block: true

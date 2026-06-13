@@ -1,0 +1,33 @@
+services:
+  research-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+
+    image: research-agent:latest
+
+    container_name: research-agent
+
+    # Required for interactive stdin CLI (agent.py uses input())
+    stdin_open: true
+    tty: true
+
+    # Secrets injected at runtime from .env — never baked into the image
+    env_file:
+      - .env
+
+    # Named volume gives the container a stable writeable workspace.
+    # Useful for caching, logs, or future state you don't want to lose
+    # on container restart — mount point matches WORKDIR so relative
+    # paths in agent.py work without changes.
+    volumes:
+      - agent-data:/app/data
+
+    # Restart policy: don't auto-restart (this is an interactive CLI,
+    # not a daemon — let the shell script control the lifecycle)
+    restart: "no"
+
+volumes:
+  agent-data:
+    driver: local
