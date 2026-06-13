@@ -15,27 +15,94 @@ from pathlib import PurePosixPath
 
 from github import Github, GithubException
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _slugify(text: str) -> str:
-    """Convert a topic string to a safe directory name."""
+
+def _slugify(text: str, max_words: int = 3) -> str:
+    """
+    Convert a topic string to a short, safe directory name.
+
+    Strips stopwords and punctuation, then keeps at most `max_words`
+    meaningful words so folder names stay concise regardless of how
+    long or conversational the original topic string is.
+
+    Examples:
+        "I want to research the current pain points of data engineers"
+        -> "data-engineers-pain"
+
+        "streaming orchestration patterns 2025"
+        -> "streaming-orchestration-patterns"
+    """
+    STOPWORDS = {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "it",
+        "as",
+        "be",
+        "are",
+        "was",
+        "were",
+        "i",
+        "we",
+        "you",
+        "what",
+        "how",
+        "why",
+        "that",
+        "this",
+        "their",
+        "them",
+        "they",
+        "my",
+        "me",
+        "about",
+        "into",
+        "want",
+        "research",
+        "currently",
+        "current",
+        "please",
+        "help",
+        "can",
+        "do",
+        "does",
+        "its",
+        "some",
+        "any",
+    }
     text = text.lower().strip()
     text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_-]+", "-", text)
-    text = re.sub(r"^-+|-+$", "", text)
-    return text or "untitled"
+    words = [w for w in text.split() if w not in STOPWORDS and len(w) > 1]
+    slug = "-".join(words[:max_words])
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "untitled"
 
 
 def _build_path(base_path: str, topic: str, run_date: date | None = None) -> str:
     """
     Build the repo-relative file path.
-    Example: topic_folders → "streaming-orchestration/2025-06-13.md"
+    Example: topic_folders -> "data-engineers/2025-06-13.md"
     """
     run_date = run_date or date.today()
-    slug = _slugify(topic)
+    # Strip whitespace from slug defensively — a stray space produces
+    # a broken path like 'some-slug 2025-06-13/file.md'
+    slug = _slugify(topic).strip()
     filename = f"{run_date.isoformat()}.md"
     parts = [p for p in [base_path, slug, filename] if p]
     return str(PurePosixPath(*parts))
@@ -63,6 +130,7 @@ def _add_frontmatter(content: str, topic: str, run_date: date) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def commit_brief(
     topic: str,

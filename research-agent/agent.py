@@ -88,20 +88,6 @@ def is_approval(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def extract_topic_from_scope(scope_reply: str) -> str:
-    """
-    Pull the topic slug from the agent's scope confirmation message.
-    Falls back to the first non-empty line if no explicit label found.
-    """
-    for line in scope_reply.splitlines():
-        line = line.strip()
-        if line.lower().startswith("topic:"):
-            return line.split(":", 1)[1].strip()
-        if line and not line.startswith("#"):
-            return line
-    return "research"
-
-
 def get_text_content(response: anthropic.types.Message) -> str:
     """Extract plain text from an API response (skips tool-use blocks)."""
     return "\n".join(block.text for block in response.content if block.type == "text")
@@ -214,9 +200,11 @@ class ResearchSession:
             "Before starting, please confirm the scope per the guardrails: "
             "restate the topic in one sentence and list what you will and will not cover."
         )
+        # Store the user's original query as the topic — never the agent's
+        # restated scope text, which is too long and conversational to slug cleanly.
+        self.pending_topic = user_query
         response = self._run_until_text()
         scope_text = get_text_content(response)
-        self.pending_topic = extract_topic_from_scope(scope_text)
         return scope_text
 
     # ------------------------------------------------------------------
