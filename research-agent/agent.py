@@ -9,13 +9,13 @@ Requires:
     ANTHROPIC_API_KEY  — Anthropic API key
     GITHUB_TOKEN       — GitHub PAT with repo write scope (contents: write)
 
-Flow per query:
-    1. User submits a research topic
-    2. Agent confirms scope (per-query) — user must approve before research begins
-    3. Agent researches using web search + any uploaded docs
-    4. Agent returns a structured brief with TL;DR, findings, confidence flags, review block
-    5. User reviews in chat — replies with approval to trigger GitHub commit
-    6. Agent commits to JHGelpi/research/{topic_slug}/{YYYY-MM-DD}.md
+Session states:
+    idle               → waiting for a topic
+    scope_pending      → agent has confirmed scope, waiting for user to confirm/correct
+    researching        → agent is running research (internal, not shown to user)
+    review_pending     → brief is displayed; user can ask questions or request changes
+    awaiting_commit    → user has said "commit" / "looks good"; one more confirm fires the push
+    committed          → brief committed to GitHub; session resets
 """
 
 from __future__ import annotations
@@ -70,25 +70,37 @@ class AgentError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Approval detection
+# Intent detection
 # ---------------------------------------------------------------------------
 
-APPROVAL_PATTERNS = re.compile(
-    r"\b("
-    r"approved?|commit\s+it|commit\s+as.is|lgtm|looks?\s+good|"
-    r"ship\s+it|yes\s+commit|go\s+ahead|proceed|yes\s+please|"
-    r"stick\s+with|as.is|that.s\s+fine|that\s+works|let.s\s+go"
-    r")\b",
+# Explicit commit intent — unambiguous phrases only.
+# "proceed", "looks good", "stick with it" are NOT here — they're too
+# easily said during the review conversation before the user is ready to commit.
+COMMIT_PATTERNS = re.compile(
+    r"\b(approved?|commit(\s+it|\s+as.is)?|lgtm|ship\s+it|yes\s+commit|push\s+it)\b",
+    re.IGNORECASE,
+)
+
+# Softer "ready to move forward" phrases — used to advance from review_pending
+# to awaiting_commit (where the user is shown what will be committed and asked
+# to confirm with an explicit commit phrase).
+READY_PATTERNS = re.compile(
+    r"\b(proceed|looks?\s+good|stick\s+with|as.is|that\s+works|go\s+ahead|"
+    r"yes\s+please|that.s\s+fine|let.s\s+go|good\s+to\s+go|ready)\b",
     re.IGNORECASE,
 )
 
 
-def is_approval(text: str) -> bool:
-    return bool(APPROVAL_PATTERNS.search(text))
+def is_commit(text: str) -> bool:
+    return bool(COMMIT_PATTERNS.search(text))
+
+
+def is_ready(text: str) -> bool:
+    return bool(READY_PATTERNS.search(text)) or is_commit(text)
 
 
 # ---------------------------------------------------------------------------
-# Brief extraction helpers
+# Brief helpers
 # ---------------------------------------------------------------------------
 
 
@@ -97,23 +109,43 @@ def get_text_content(response: anthropic.types.Message) -> str:
     return "\n".join(block.text for block in response.content if block.type == "text")
 
 
+def is_valid_brief(content: str) -> bool:
+    """
+    Confirm content is a real research brief, not a conversational meta-response.
+    Requires TL;DR, READY FOR REVIEW, and minimum length.
+    """
+    has_tldr = "TL;DR" in content or "tl;dr" in content.lower()
+    has_review = "READY FOR REVIEW" in content
+    is_long = len(content.strip()) > 300
+    return has_tldr and has_review and is_long
+
+
 # ---------------------------------------------------------------------------
-# Core agent loop
+# Core agent session
 # ---------------------------------------------------------------------------
 
 
 class ResearchSession:
     """
     Manages one research topic from scope confirmation through GitHub commit.
+
+    State machine:
+        idle → scope_pending → review_pending ⇄ (revision loop)
+                                     ↓  (user signals ready)
+                              awaiting_commit
+                                     ↓  (explicit commit phrase)
+                                 committed
     """
 
     def __init__(self):
         self.messages: list[dict] = []
         self.pending_brief: str | None = None
         self.pending_topic: str | None = None
-        self.state: str = (
-            "idle"  # idle → scope_pending → researching → review_pending → committed
-        )
+        self.state = "idle"
+
+    # ------------------------------------------------------------------
+    # API call with graceful error handling
+    # ------------------------------------------------------------------
 
     def _call_api(self) -> anthropic.types.Message:
         try:
@@ -158,31 +190,15 @@ class ResearchSession:
     def _append_assistant(self, response: anthropic.types.Message):
         self.messages.append({"role": "assistant", "content": response.content})
 
-    # ------------------------------------------------------------------
-    # Handle tool use (web_search) — agentic loop
-    # ------------------------------------------------------------------
-
     def _run_until_text(self) -> anthropic.types.Message:
-        """
-        Keep calling the API until stop_reason is 'end_turn' (no more tool calls).
-        The Anthropic SDK returns tool_use blocks; we feed results back automatically.
-        Web search is server-side so results come back in tool_result blocks.
-        """
+        """Run the agentic loop until the model returns end_turn (no more tool calls)."""
         while True:
             response = self._call_api()
             self._append_assistant(response)
-
             if response.stop_reason == "end_turn":
                 return response
-
             if response.stop_reason == "tool_use":
-                # Web search is executed server-side; no client execution needed.
-                # Tool results are already included in the next API response
-                # when using the built-in web_search server tool.
-                # For any custom client-side tools added later, handle here.
                 continue
-
-            # Unexpected stop reason — surface and return
             print(
                 f"[warn] Unexpected stop_reason: {response.stop_reason}",
                 file=sys.stderr,
@@ -194,109 +210,121 @@ class ResearchSession:
     # ------------------------------------------------------------------
 
     def start(self, user_query: str) -> str:
-        """
-        Submit the initial query. Agent will confirm scope before researching.
-        Returns the agent's scope confirmation message.
-        """
         self.state = "scope_pending"
+        # Store original query as topic slug source — never the agent's restatement
+        self.pending_topic = user_query
         self._append_user(
             f"Research request: {user_query}\n\n"
             "Before starting, please confirm the scope per the guardrails: "
             "restate the topic in one sentence and list what you will and will not cover."
         )
-        # Store the user's original query as the topic — never the agent's
-        # restated scope text, which is too long and conversational to slug cleanly.
-        self.pending_topic = user_query
         response = self._run_until_text()
-        scope_text = get_text_content(response)
-        return scope_text
+        return get_text_content(response)
 
     # ------------------------------------------------------------------
-    # Step 2: User confirms scope → agent researches
+    # Step 2: User confirms scope → research runs → brief returned
     # ------------------------------------------------------------------
 
     def confirm_scope(self, user_reply: str) -> str:
-        """
-        User has confirmed (or corrected) the scope. Agent proceeds to research.
-        Returns the structured brief.
-        """
-        self.state = "researching"
         self._append_user(user_reply + "\n\nProceed with research.")
         response = self._run_until_text()
         brief = get_text_content(response)
-        self.pending_brief = brief
+        # Only store as pending_brief if it's a real brief
+        if is_valid_brief(brief):
+            self.pending_brief = brief
         self.state = "review_pending"
         return brief
 
     # ------------------------------------------------------------------
-    # Step 3: Human review — approval triggers commit
+    # Step 3a: Review conversation — user can ask questions or request changes
     # ------------------------------------------------------------------
 
-    def handle_review_reply(self, user_reply: str) -> str:
+    def handle_review_reply(self, user_reply: str) -> tuple[str, str]:
         """
-        Handle the user's reply to the READY FOR REVIEW block.
-        If approved: validate brief, then commit to GitHub.
-        If 'redo': re-run research from scratch without re-confirming scope.
-        Otherwise: pass reply back to agent for revision.
+        Handle a reply during review_pending.
+
+        Returns (response_text, new_state) so the main loop can print a
+        contextual prompt based on what state we're now in.
         """
-        if is_approval(user_reply) and self.pending_brief and self.pending_topic:
-            return self._commit()
+        # Explicit commit phrase — go straight to commit
+        if is_commit(user_reply) and self.pending_brief and self.pending_topic:
+            result = self._commit()
+            return result, self.state
+
+        # Softer "ready" signal — advance to awaiting_commit for one final confirm
+        if (
+            is_ready(user_reply)
+            and self.pending_brief
+            and is_valid_brief(self.pending_brief)
+        ):
+            self.state = "awaiting_commit"
+            slug = self.pending_topic[:60] + (
+                "..." if len(self.pending_topic) > 60 else ""
+            )
+            return (
+                f"Ready to commit. Here's what will be pushed:\n\n"
+                f"  Topic:  {slug}\n"
+                f"  Repo:   {GITHUB_CFG['repo']}\n"
+                f"  Branch: {GITHUB_CFG['branch']}\n\n"
+                "Type 'commit', 'approved', or 'lgtm' to confirm. "
+                "Anything else returns to the brief."
+            ), "awaiting_commit"
 
         # 'redo' — re-run research without re-confirming scope
         if user_reply.strip().lower() == "redo":
-            self.state = "researching"
             print("\n[Agent — re-running research...]\n")
             self._append_user(
-                "Please disregard your last response and run the full research now. "
-                "Output the complete structured brief starting with ## TL;DR."
+                "Please disregard your last response and produce the full research brief now, "
+                "starting with ## TL;DR."
             )
             response = self._run_until_text()
             revised = get_text_content(response)
-            self.pending_brief = revised
+            if is_valid_brief(revised):
+                self.pending_brief = revised
             self.state = "review_pending"
-            return revised
+            return revised, "review_pending"
 
-        # Not an approval — treat as a revision request.
-        # Only overwrite pending_brief if the agent's response looks like
-        # a real revised brief (contains TL;DR). If the agent responds
-        # conversationally, keep the existing brief intact so the user
-        # can still approve and commit it.
-        self.state = "researching"
+        # Revision request — pass to agent, preserve pending_brief if response is conversational
         self._append_user(user_reply)
         response = self._run_until_text()
         revised = get_text_content(response)
-        if self._is_valid_brief(revised):
+        if is_valid_brief(revised):
             self.pending_brief = revised
-        # else: keep pending_brief as-is; the agent responded conversationally
         self.state = "review_pending"
-        return revised
+        return revised, "review_pending"
+
+    # ------------------------------------------------------------------
+    # Step 3b: Awaiting commit confirmation
+    # ------------------------------------------------------------------
+
+    def handle_commit_reply(self, user_reply: str) -> tuple[str, str]:
+        """
+        We've shown the user what will be committed. Explicit commit phrase fires it.
+        Anything else drops back to review_pending.
+        """
+        if is_commit(user_reply):
+            result = self._commit()
+            return result, self.state
+
+        # Not a commit phrase — back to review
+        self.state = "review_pending"
+        return (
+            "Commit cancelled — brief is still available for review.\n"
+            "Make changes, ask questions, or say 'commit' / 'lgtm' when ready."
+        ), "review_pending"
 
     # ------------------------------------------------------------------
     # Step 4: Commit to GitHub
     # ------------------------------------------------------------------
 
-    def _is_valid_brief(self, content: str) -> bool:
-        """
-        Sanity-check that pending_brief is actual research output and not
-        a conversational meta-response the agent sent instead of a brief.
-        A valid brief must contain a TL;DR section and a READY FOR REVIEW block.
-        """
-        has_tldr = "TL;DR" in content or "tl;dr" in content.lower()
-        has_review = "READY FOR REVIEW" in content
-        is_long_enough = len(content.strip()) > 300
-        return has_tldr and has_review and is_long_enough
-
     def _commit(self) -> str:
         assert self.pending_brief and self.pending_topic
 
-        if not self._is_valid_brief(self.pending_brief):
+        if not is_valid_brief(self.pending_brief):
             self.state = "review_pending"
             return (
-                "[Error] The content queued for commit doesn't look like a completed "
-                "research brief — it's missing a TL;DR or READY FOR REVIEW block.\n"
-                "This usually means the agent responded conversationally instead of "
-                "researching.\n\n"
-                "Reply 'redo' to run the research again, or describe what you want changed."
+                "[Error] Brief content failed validation — missing TL;DR or READY FOR REVIEW.\n"
+                "Type 'redo' to re-run research, or describe what you want changed."
             )
 
         try:
@@ -312,7 +340,7 @@ class ResearchSession:
             return (
                 f"[ERROR] GitHub commit failed: {exc}\n"
                 "The brief has NOT been committed. Check your GITHUB_TOKEN and repo config.\n"
-                "Your brief is still available — reply 'lgtm' to try again."
+                "Your brief is still here — type 'lgtm' to try again."
             )
 
         self.state = "committed"
@@ -329,10 +357,17 @@ class ResearchSession:
 # CLI entrypoint
 # ---------------------------------------------------------------------------
 
+REVIEW_PROMPT = (
+    "  (Ask questions, request changes, say 'ready' to commit, or 'redo' to re-run)\n"
+    "You > "
+)
+COMMIT_PROMPT = (
+    "  (Type 'commit', 'approved', or 'lgtm' to push — anything else cancels)\nYou > "
+)
+
 
 def main():
     print("Research Agent — type your topic, or 'quit' to exit.\n")
-
     session = ResearchSession()
 
     while True:
@@ -358,16 +393,24 @@ def main():
                 print()
 
             elif session.state == "review_pending":
-                reply = input("You > ").strip()
+                reply = input(REVIEW_PROMPT).strip()
                 if not reply:
                     continue
                 print("\n[Agent...]\n")
-                result = session.handle_review_reply(reply)
-                print(result)
+                text, _ = session.handle_review_reply(reply)
+                print(text)
+                print()
+
+            elif session.state == "awaiting_commit":
+                reply = input(COMMIT_PROMPT).strip()
+                if not reply:
+                    continue
+                print("\n[Agent...]\n")
+                text, _ = session.handle_commit_reply(reply)
+                print(text)
                 print()
 
             elif session.state == "committed":
-                # Reset for next query
                 session = ResearchSession()
 
             else:
@@ -375,7 +418,6 @@ def main():
                 session = ResearchSession()
 
         except AgentError as exc:
-            # Known, recoverable errors — print cleanly and reset to idle
             print(f"\n[Error] {exc}\n", file=sys.stderr)
             session = ResearchSession()
 
