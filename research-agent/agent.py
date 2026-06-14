@@ -115,6 +115,32 @@ def is_valid_brief(content: str) -> bool:
     return has_tldr and has_review and is_long
 
 
+def extract_open_questions(brief: str) -> str | None:
+    """
+    Pull the 'Open questions for human' block out of the READY FOR REVIEW section.
+    Returns the questions as a string, or None if not found / empty.
+    """
+    match = re.search(
+        r"Open questions for human[:\s]*(.*?)(?=\n---|\Z)",
+        brief,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return None
+    text = match.group(1).strip()
+    # Filter out placeholder / empty lines and the commit question
+    lines = [
+        l.strip()
+        for l in text.splitlines()
+        if l.strip()
+        and "commit" not in l.lower()
+        and "github" not in l.lower()
+        and "push" not in l.lower()
+        and "save" not in l.lower()
+    ]
+    return "\n".join(lines) if lines else None
+
+
 # ---------------------------------------------------------------------------
 # Core agent session
 # ---------------------------------------------------------------------------
@@ -373,6 +399,17 @@ def main():
                 brief = session.confirm_scope(reply)
                 print(brief)
                 print()
+                # Surface open questions prominently so the user sees them
+                # before deciding whether to ask follow-ups or type 'done'
+                questions = extract_open_questions(brief)
+                if questions:
+                    print("─" * 60)
+                    print("  Open questions from the agent:")
+                    print()
+                    for line in questions.splitlines():
+                        print(f"  {line}")
+                    print("─" * 60)
+                    print()
 
             elif session.state == "review_pending":
                 reply = input(REVIEW_PROMPT).strip()
