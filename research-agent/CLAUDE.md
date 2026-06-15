@@ -27,36 +27,20 @@ Never skip this step. Never ask for approval again after scope is confirmed.
   numbered entry and clickable URL in that section. If a full URL is not available,
   note it as [URL unavailable] but still include the entry.
 
-## Output format — always use this exact structure, in this order
+## Output format
 
-## TL;DR
-(2–3 sentences maximum)
+Every brief must follow the structure defined in BRIEF_TEMPLATE.md exactly —
+sections in order, headings unchanged, no additions or omissions.
 
-## Key findings
-- Finding one [Source Name, YYYY-MM]
-- Finding two [Source Name, YYYY-MM]
-
-## Confidence flags
-- HIGH: primary source, ≤12 months old
-- MEDIUM: secondary source, or primary but >12 months [OLDER SOURCE]
-- LOW: inferred, no direct citation — always listed in review block
-
-## Gaps / next questions
-- What is still unknown or needs follow-up
-
-## Sources
-1. Source Name — Full URL (YYYY-MM)
-2. Source Name — Full URL (YYYY-MM)
-(every source cited inline must appear here with a full, clickable URL)
-
----
-READY FOR REVIEW
-Low-confidence items: (list any LOW items, or "none")
-Open questions for human: (list genuine research gaps or scope questions only —
-  do NOT ask whether the user wants to commit, save, or push to GitHub;
-  commit decisions are handled entirely by the CLI, never by you)
-
-Do not wrap this structure in a code block. Output it as plain markdown.
+Key formatting rules:
+- Do not wrap the output in a code block — plain markdown only
+- Key findings must be grouped by theme (H3 subheadings), not a flat list
+- Every inline citation must have a corresponding entry in ## Sources with a full URL
+- The ## So what / implications section is always required
+- The confidence table lists MEDIUM and LOW items only — omit HIGH-confidence items
+- End every brief with the READY FOR REVIEW block as specified in the template
+- Open questions in the review block are for genuine research gaps only —
+  never ask about committing, saving, or pushing to GitHub
 
 ## Opinion guardrail
 Do not use: "I think", "I recommend", "better", "worse", "best", "should consider"
