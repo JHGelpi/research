@@ -35,6 +35,7 @@ from pathlib import Path
 
 import anthropic
 import yaml
+
 from github_writer import commit_brief
 
 # ---------------------------------------------------------------------------
@@ -45,12 +46,25 @@ CONFIG_PATH = Path(__file__).parent / "config.yaml"
 with open(CONFIG_PATH) as f:
     CONFIG = yaml.safe_load(f)
 
-CLAUDE_MD_PATH = Path(__file__).parent / "CLAUDE.md"
+CLAUDE_MD_PATH    = Path(__file__).parent / "CLAUDE.md"
+TEMPLATE_PATH     = Path(__file__).parent / "BRIEF_TEMPLATE.md"
+
 with open(CLAUDE_MD_PATH) as f:
-    SYSTEM_PROMPT = f.read()
+    _claude_md = f.read()
+
+with open(TEMPLATE_PATH) as f:
+    _brief_template = f.read()
+
+# Combine into a single system prompt: guardrails first, then the template
+SYSTEM_PROMPT = (
+    _claude_md
+    + "\n\n---\n\n"
+    + "# Brief template (follow exactly)\n\n"
+    + _brief_template
+)
 
 GITHUB_CFG = CONFIG["github"]
-AGENT_CFG = CONFIG["agent"]
+AGENT_CFG  = CONFIG["agent"]
 
 # ---------------------------------------------------------------------------
 # Anthropic client + tools
@@ -70,33 +84,31 @@ TOOLS = [
 # Recoverable agent error
 # ---------------------------------------------------------------------------
 
-
 class AgentError(Exception):
     pass
-
 
 # ---------------------------------------------------------------------------
 # Intent detection — explicit CLI commands only, no natural language matching
 # ---------------------------------------------------------------------------
 
 # User is done reviewing and wants to commit
-DONE_COMMANDS = {"done", "save"}
+DONE_COMMANDS    = {"done", "save"}
 
 # Final commit confirmation (in awaiting_commit state only)
-COMMIT_COMMANDS = {"commit", "lgtm", "approved", "yes"}
+COMMIT_COMMANDS  = {"commit", "lgtm", "approved", "yes"}
 
 # Exit
-EXIT_COMMANDS = {"quit", "exit", "q"}
+EXIT_COMMANDS    = {"quit", "exit", "q"}
 
 
 # ---------------------------------------------------------------------------
 # Brief helpers
 # ---------------------------------------------------------------------------
 
-
 def get_text_content(response: anthropic.types.Message) -> str:
-    return "\n".join(block.text for block in response.content if block.type == "text")
-
+    return "\n".join(
+        block.text for block in response.content if block.type == "text"
+    )
 
 def is_valid_brief(content: str) -> bool:
     """
@@ -104,14 +116,14 @@ def is_valid_brief(content: str) -> bool:
     Requires a TL;DR section and minimum length. READY FOR REVIEW is checked
     loosely since the agent may render it inside or outside a code fence.
     """
-    has_tldr = "TL;DR" in content or "tl;dr" in content.lower()
+    has_tldr   = "TL;DR" in content or "tl;dr" in content.lower()
     has_review = (
         "READY FOR REVIEW" in content
         or "ready for review" in content.lower()
-        or "## Sources" in content  # sources section is an equally strong signal
+        or "## Sources" in content   # sources section is an equally strong signal
         or "## Gaps" in content
     )
-    is_long = len(content.strip()) > 300
+    is_long    = len(content.strip()) > 300
     return has_tldr and has_review and is_long
 
 
@@ -130,8 +142,7 @@ def extract_open_questions(brief: str) -> str | None:
     text = match.group(1).strip()
     # Filter out placeholder / empty lines and the commit question
     lines = [
-        l.strip()
-        for l in text.splitlines()
+        l.strip() for l in text.splitlines()
         if l.strip()
         and "commit" not in l.lower()
         and "github" not in l.lower()
@@ -145,8 +156,8 @@ def extract_open_questions(brief: str) -> str | None:
 # Core agent session
 # ---------------------------------------------------------------------------
 
-
 class ResearchSession:
+
     def __init__(self):
         self.messages: list[dict] = []
         self.pending_brief: str | None = None
@@ -208,10 +219,7 @@ class ResearchSession:
                 return response
             if response.stop_reason == "tool_use":
                 continue
-            print(
-                f"[warn] Unexpected stop_reason: {response.stop_reason}",
-                file=sys.stderr,
-            )
+            print(f"[warn] Unexpected stop_reason: {response.stop_reason}", file=sys.stderr)
             return response
 
     # ------------------------------------------------------------------
@@ -257,9 +265,7 @@ class ResearchSession:
                     "Type 'redo' to re-run research."
                 )
             self.state = "awaiting_commit"
-            slug = self.pending_topic[:60] + (
-                "..." if len(self.pending_topic) > 60 else ""
-            )
+            slug = self.pending_topic[:60] + ("..." if len(self.pending_topic) > 60 else "")
             return (
                 f"Ready to commit. Here's what will be pushed:\n\n"
                 f"  Topic:  {slug}\n"
@@ -372,7 +378,6 @@ COMMIT_PROMPT = (
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
-
 
 def main():
     print("Research Agent — type your topic, or 'quit' to exit.\n")
